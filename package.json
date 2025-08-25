@@ -1,0 +1,15 @@
+{
+  "name": "vcc-gallery",
+  "version": "1.0.0",
+  "description": "A simple Node.js gallery to serve local photos and videos.",
+  "main": "server.js",
+  "author": "Chance Jiang",
+  "dependencies": {
+    "express": "^5.1.0",
+    "exif-parser": "^0.1.12"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  }
+}
