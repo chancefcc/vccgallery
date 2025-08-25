@@ -5,8 +5,8 @@ Express.js server serving local directory's media files to local web browser
 First, clone the repository to your local machine using git:
 
 ```
-git clone \<your-repository-url\>
-cd vcc-gallery
+git clone https://github.com/chancefcc/vccgallery.git
+cd vccgallery
 ```
 
 Next, install the required Node.js packages by running the following command in your terminal:
@@ -24,7 +24,7 @@ To use the gallery, place all your media files (photos and videos) inside a dire
 For example, your file structure should look like this:
 
 ```
-/vcc-gallery
+/vccgallery
 ├─── photos
 │    ├─── my-photo.jpg
 │    ├─── vacation-video.mp4
