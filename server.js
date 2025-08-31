@@ -294,6 +294,7 @@ const renderHtmlPage = (title, author, fileListHtml, mediaFilesForModal, viewTyp
                 --card-bg: #fff;
                 --border-color: #ccc;
                 --shadow-color: rgba(0,0,0,0.1);
+                --brand-color: #C4A484; /* Defined brand color */
               }
               body.dark-mode {
                 --bg-color: #3b3b3b;
@@ -312,7 +313,7 @@ const renderHtmlPage = (title, author, fileListHtml, mediaFilesForModal, viewTyp
                 padding: 10px;
                 border-radius: 8px;
                 box-shadow: 0 4px 6px var(--shadow-color);
-                background-color: var(--card-bg);
+                background-color: var(--card-bg); /* Default background for file containers */
                 cursor: pointer;
                 transition: background-color 0.3s, box-shadow 0.3s;
                 /* Added for folder links to behave as blocks */
@@ -321,9 +322,21 @@ const renderHtmlPage = (title, author, fileListHtml, mediaFilesForModal, viewTyp
                 text-decoration: none; /* Ensure no underline on folder links */
                 color: inherit; /* Inherit text color for folder links */
               }
+              /* Styling for sub-folders on main page, using brand color */
+              a.media-container.folder-container {
+                background-color: var(--brand-color);
+                border: 1px solid var(--border-color); /* Keep existing border for consistency */
+                box-shadow: 0 6px 12px var(--shadow-color); /* Slightly more prominent shadow */
+              }
+              /* Text color for paragraphs inside folder containers */
+              a.media-container.folder-container p {
+                color: #ffffff; /* White text for readability on brand background */
+              }
+
+
               .media-container img, .media-container video { max-width: 100%; height: auto; display: block; margin: 0 auto 10px; border-radius: 4px; }
               a.media-link { text-decoration: none; color: inherit; } /* Specific for internal modal links */
-              p { margin: 0; padding: 0; word-wrap: break-word; font-size: 0.9em; color: var(--text-color); }
+              p { margin: 0; padding: 0; word-wrap: break-word; font-size: 0.9em; color: var(--text-color); } /* Default for other paragraphs */
 
               /* Folder specific styling */
               .folder-container img {
