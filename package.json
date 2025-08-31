@@ -10,6 +10,7 @@
   },
   "scripts": {
     "start": "node server.js",
+    "start:custom": "GALLERY_ROOT=my_custom_photos_folder node server.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   }
 }

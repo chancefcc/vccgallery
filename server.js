@@ -4,12 +4,14 @@ const fs = require("fs");
 const exif = require("exif-parser");
 
 const app = express();
-const photosDirectory = "photos";
+// Read photosDirectory from environment variable, default to 'photos'
+const photosDirectory = process.env.GALLERY_ROOT || "photos";
 
 const projectTitle = "VCC Gallery";
 const authorName = "Chance Jiang";
 
-// Serve static files
+// Serve static files from the photos directory and its subdirectories
+// This should be placed at the top to ensure static files (like images, videos, CSS) are served directly.
 app.use(express.static(path.join(__dirname, photosDirectory)));
 
 const getExifData = async (filePath) => {
@@ -19,85 +21,271 @@ const getExifData = async (filePath) => {
     const result = parser.tags;
     return result;
   } catch (err) {
-    console.error(`Error parsing EXIF for ${filePath}:`, err.message);
+    // console.error(`Error parsing EXIF for ${filePath}:`, err.message); // Suppress frequent errors for non-JPGs
     return null;
   }
 };
 
-app.get("/", async (req, res) => {
+// Helper function to get media files from a given directory
+const getMediaFilesFromDirectory = async (directoryPath) => {
   try {
-    const files = await fs.promises.readdir(path.join(__dirname, photosDirectory));
-
-    const mediaFiles = files.filter((file) => {
+    const files = await fs.promises.readdir(directoryPath);
+    return files.filter((file) => {
       const ext = path.extname(file).toLowerCase();
       return [".jpg", ".jpeg", ".png", ".gif", ".mp4", ".mov", ".webm", ".webp"].includes(ext);
     });
+  } catch (error) {
+    console.error(`Error reading media files from ${directoryPath}:`, error.message);
+    return [];
+  }
+};
 
-    const fileDataPromises = mediaFiles.map(async (file) => {
-      const filePath = path.join(__dirname, photosDirectory, file);
-      const ext = path.extname(file).toLowerCase();
-      let caption = "";
+// Helper function to find a cover image for a folder
+const findFolderCover = async (folderFullPath, folderRelativePath) => {
+  const mediaFiles = await getMediaFilesFromDirectory(folderFullPath);
 
-      if ([".jpg", ".jpeg"].includes(ext)) {
-        const exifData = await getExifData(filePath);
-        if (exifData) {
-          const captionTags = ["ImageDescription", "Title", "ObjectName"];
+  let coverFileName = null;
+  // Prioritize files named 'cover.*' (case-insensitive and prefix match)
+  const potentialCovers = mediaFiles.filter((file) => path.parse(file).name.toLowerCase().startsWith("cover"));
+  if (potentialCovers.length > 0) {
+    // Pick the first cover file found
+    coverFileName = potentialCovers[0];
+  } else if (mediaFiles.length > 0) {
+    // If no 'cover' file, use the first media file
+    coverFileName = mediaFiles[0];
+  }
 
-          for (const tag of captionTags) {
-            if (exifData[tag]) {
-              caption = exifData[tag].trim();
-              break;
-            }
-          }
+  if (coverFileName) {
+    const coverFilePath = path.join(folderFullPath, coverFileName);
+    const coverFileRelativePath = path.join(folderRelativePath, coverFileName);
+    let caption = folderRelativePath.split(path.sep).pop().split(/[-_]+/).join(" ").trim(); // Default caption from folder name
 
-          if (!caption) {
-            if (exifData.DateTimeOriginal) {
-              const date = new Date(exifData.DateTimeOriginal * 1000);
-              caption = date.toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" });
-            } else if (exifData.Model) {
-              caption = exifData.Model;
-            }
-          }
+    // Try to get EXIF from cover if it's a JPG/JPEG
+    if ([".jpg", ".jpeg"].includes(path.extname(coverFileName).toLowerCase())) {
+      const exifData = await getExifData(coverFilePath);
+      if (exifData && exifData.ImageDescription) {
+        caption = exifData.ImageDescription.trim();
+      }
+    }
+
+    return {
+      url: `/${coverFileRelativePath}`,
+      caption: caption,
+      ext: path.extname(coverFileName).toLowerCase(),
+    };
+  }
+  return null; // No suitable cover found
+};
+
+// Helper to process a single media file for modal data
+const processMediaFileForModal = async (fullPath, relativePath) => {
+  const ext = path.extname(fullPath).toLowerCase();
+  let caption = "";
+
+  if ([".jpg", ".jpeg"].includes(ext)) {
+    const exifData = await getExifData(fullPath);
+    if (exifData) {
+      const captionTags = ["ImageDescription", "Title", "ObjectName"];
+      for (const tag of captionTags) {
+        if (exifData[tag]) {
+          caption = exifData[tag].trim();
+          break;
         }
       }
-
       if (!caption) {
-        if ([".mp4", ".mov", ".webm"].includes(ext)) {
-          caption = "Video";
-        } else {
-          caption = path.parse(file).name.split(/[-_]+/).join(" ").trim();
+        if (exifData.DateTimeOriginal) {
+          const date = new Date(exifData.DateTimeOriginal * 1000);
+          caption = date.toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" });
+        } else if (exifData.Model) {
+          caption = exifData.Model;
         }
       }
+    }
+  }
+  if (!caption) {
+    if ([".mp4", ".mov", ".webm"].includes(ext)) {
+      caption = "Video";
+    } else {
+      caption = path.parse(relativePath).name.split(/[-_]+/).join(" ").trim();
+    }
+  }
+  return { file: relativePath, caption: caption, ext: ext };
+};
 
-      return { file, caption, ext };
+// Route for the main gallery view
+app.get("/", async (req, res) => {
+  try {
+    const entries = await fs.promises.readdir(path.join(__dirname, photosDirectory), { withFileTypes: true });
+
+    const galleryItemsPromises = entries.map(async (entry) => {
+      const entryRelativePath = entry.name;
+      const entryFullPath = path.join(__dirname, photosDirectory, entry.name);
+
+      if (entry.isDirectory()) {
+        const coverData = await findFolderCover(entryFullPath, entryRelativePath);
+        return {
+          type: "folder",
+          name: entry.name,
+          caption: coverData
+            ? coverData.caption
+            : entryRelativePath.split(path.sep).pop().split(/[-_]+/).join(" ").trim(),
+          thumbnailUrl: coverData ? coverData.url : "/folder_icon.png", // Use a generic folder icon if no media (make sure '/folder_icon.png' exists if used)
+          link: `/${entry.name}`, // Link now points directly to /folderName
+        };
+      } else if (entry.isFile()) {
+        const ext = path.extname(entry.name).toLowerCase();
+        if ([".jpg", ".jpeg", ".png", ".gif", ".mp4", ".mov", ".webm", ".webp"].includes(ext)) {
+          const fileData = await processMediaFileForModal(entryFullPath, entryRelativePath);
+          return {
+            type: "file",
+            ...fileData,
+            thumbnailUrl: `/${entryRelativePath}`,
+          };
+        }
+      }
+      return null; // Ignore non-media files or unsupported extensions
     });
 
-    const fileData = await Promise.all(fileDataPromises);
+    let galleryItems = (await Promise.all(galleryItemsPromises)).filter((item) => item !== null);
 
-    const fileListHtml = fileData
-      .map((data, index) => {
-        const mediaElement = [".mp4", ".mov", ".webm"].includes(data.ext)
-          ? `<video src="/${data.file}" controls preload="metadata"></video>`
-          : `<img src="/${data.file}" alt="${data.caption}">`;
+    // Sort items: folders first, then files, then alphabetically by name/caption
+    galleryItems.sort((a, b) => {
+      if (a.type === "folder" && b.type !== "folder") return -1;
+      if (a.type !== "folder" && b.type === "folder") return 1;
+      return (a.name || a.caption).localeCompare(b.name || b.caption);
+    });
 
-        return `
-        <div class="media-container" data-index="${index}">
-          <a href="#" class="media-link">
-            ${mediaElement}
-          </a>
-          <p>${data.caption}</p>
-        </div>
-      `;
+    // Collect ALL individual media files (from root and all subfolders) for the global modal
+    const allMediaFilesForModal = [];
+    const collectAllMediaFiles = async (currentDir, relativePathSegments = []) => {
+      const dirEntries = await fs.promises.readdir(currentDir, { withFileTypes: true });
+      await Promise.all(
+        dirEntries.map(async (entry) => {
+          const fullPath = path.join(currentDir, entry.name);
+          const relativePath = path.join(...relativePathSegments, entry.name);
+          if (entry.isDirectory()) {
+            await collectAllMediaFiles(fullPath, [...relativePathSegments, entry.name]);
+          } else if (entry.isFile()) {
+            const ext = path.extname(entry.name).toLowerCase();
+            if ([".jpg", ".jpeg", ".png", ".gif", ".mp4", ".mov", ".webm", ".webp"].includes(ext)) {
+              allMediaFilesForModal.push(await processMediaFileForModal(fullPath, relativePath));
+            }
+          }
+        }),
+      );
+    };
+    await collectAllMediaFiles(path.join(__dirname, photosDirectory));
+
+    const fileListHtml = galleryItems
+      .map((data) => {
+        if (data.type === "folder") {
+          // Folder item: Entire container is a link
+          return `
+                <a href="${data.link}" class="media-container folder-container media-link">
+                    <img src="${data.thumbnailUrl}" alt="${data.caption}">
+                    <p>${data.caption}</p>
+                </a>
+            `;
+        } else {
+          // type is 'file' (loose file in root)
+          const mediaElement = [".mp4", ".mov", ".webm"].includes(data.ext)
+            ? `<video src="${data.thumbnailUrl}" controls preload="metadata"></video>`
+            : `<img src="${data.thumbnailUrl}" alt="${data.caption}">`;
+
+          // Find the index of this file in the `allMediaFilesForModal` array for modal navigation
+          const modalIndex = allMediaFilesForModal.findIndex((f) => f.file === data.file);
+
+          return `
+                <div class="media-container file-container" data-index="${modalIndex}">
+                    <a href="#" class="media-link">
+                        ${mediaElement}
+                    </a>
+                    <p>${data.caption}</p>
+                </div>
+            `;
+        }
       })
       .join("");
 
-    const html = `
+    res.send(renderHtmlPage(projectTitle, authorName, fileListHtml, allMediaFilesForModal, "main"));
+  } catch (err) {
+    console.error("Error in main route:", err);
+    res.status(500).send("An error occurred while building the gallery.");
+  }
+});
+
+// Dynamic route to handle requests for sub-folders
+// This must be AFTER app.get('/') to prioritize the homepage,
+// but BEFORE any general 404 handler.
+app.get("/:potentialFolderName", async (req, res, next) => {
+  const folderName = req.params.potentialFolderName;
+  const folderFullPath = path.join(__dirname, photosDirectory, folderName);
+
+  try {
+    const stat = await fs.promises.stat(folderFullPath);
+    if (stat.isDirectory()) {
+      // If it's a directory, render the folder's gallery view
+      const folderRelativePath = folderName; // relative to photosDirectory
+
+      const mediaFiles = await getMediaFilesFromDirectory(folderFullPath);
+
+      const folderMediaFilesForModalPromises = mediaFiles.map(async (file) => {
+        const fullPath = path.join(folderFullPath, file);
+        const relativePath = path.join(folderRelativePath, file);
+        return await processMediaFileForModal(fullPath, relativePath);
+      });
+      const folderMediaFilesForModal = await Promise.all(folderMediaFilesForModalPromises);
+
+      const fileListHtml = folderMediaFilesForModal
+        .map((data, index) => {
+          const mediaElement = [".mp4", ".mov", ".webm"].includes(data.ext)
+            ? `<video src="/${data.file}" controls preload="metadata"></video>`
+            : `<img src="/${data.file}" alt="${data.caption}">`;
+
+          return `
+          <div class="media-container file-container" data-index="${index}">
+            <a href="#" class="media-link">
+              ${mediaElement}
+            </a>
+            <p>${data.caption}</p>
+          </div>
+        `;
+        })
+        .join("");
+
+      res.send(
+        renderHtmlPage(
+          `${projectTitle} - ${folderName}`,
+          authorName,
+          fileListHtml,
+          folderMediaFilesForModal,
+          "folder",
+          folderName,
+        ),
+      );
+    } else {
+      // If it's not a directory (e.g., a file or something else), pass control to the next middleware
+      next();
+    }
+  } catch (err) {
+    if (err.code === "ENOENT") {
+      // Path not found, pass control to the next middleware (e.g., a 404 handler)
+      next();
+    } else {
+      console.error(`Error in dynamic route /${folderName}:`, err);
+      res.status(500).send("An error occurred while building the folder gallery.");
+    }
+  }
+});
+
+// Function to render the full HTML page (to avoid duplication)
+const renderHtmlPage = (title, author, fileListHtml, mediaFilesForModal, viewType, currentFolder = "") => `
       <!DOCTYPE html>
       <html lang="en">
       <head>
           <meta charset="UTF-8">
           <meta name="viewport" content="width=device-width, initial-scale=1.0">
-          <title>${projectTitle}</title>
+          <title>${title}</title>
           <style>
               /* Light/Dark Theme Variables */
               :root {
@@ -117,10 +305,31 @@ app.get("/", async (req, res) => {
 
               body { font-family: sans-serif; display: flex; flex-wrap: wrap; gap: 20px; padding: 20px; background-color: var(--bg-color); color: var(--text-color); transition: background-color 0.3s, color 0.3s; }
               .header { width: 100%; text-align: center; padding-bottom: 20px; border-bottom: 2px solid var(--border-color); margin-bottom: 20px; }
-              .media-container { width: 250px; text-align: center; border: 1px solid var(--border-color); padding: 10px; border-radius: 8px; box-shadow: 0 4px 6px var(--shadow-color); background-color: var(--card-bg); cursor: pointer; transition: background-color 0.3s, box-shadow 0.3s; }
+              .media-container {
+                width: 250px;
+                text-align: center;
+                border: 1px solid var(--border-color);
+                padding: 10px;
+                border-radius: 8px;
+                box-shadow: 0 4px 6px var(--shadow-color);
+                background-color: var(--card-bg);
+                cursor: pointer;
+                transition: background-color 0.3s, box-shadow 0.3s;
+                /* Added for folder links to behave as blocks */
+                display: flex;
+                flex-direction: column;
+                text-decoration: none; /* Ensure no underline on folder links */
+                color: inherit; /* Inherit text color for folder links */
+              }
               .media-container img, .media-container video { max-width: 100%; height: auto; display: block; margin: 0 auto 10px; border-radius: 4px; }
-              a { text-decoration: none; color: inherit; }
+              a.media-link { text-decoration: none; color: inherit; } /* Specific for internal modal links */
               p { margin: 0; padding: 0; word-wrap: break-word; font-size: 0.9em; color: var(--text-color); }
+
+              /* Folder specific styling */
+              .folder-container img {
+                max-height: 200px; /* Limit height for folder covers */
+                object-fit: cover; /* Ensure covers fill space nicely */
+              }
 
               /* Modal Styles */
               .modal { display: none; position: fixed; z-index: 100; left: 0; top: 0; width: 100%; height: 100%; overflow: auto; background-color: rgba(0,0,0,0.9); }
@@ -146,12 +355,28 @@ app.get("/", async (req, res) => {
                 background-color: var(--card-bg);
                 color: var(--text-color);
               }
+              /* Back button specific styling */
+              .back-button-wrapper { width: 100%; text-align: left; margin-bottom: 20px;}
+              .back-button {
+                display: inline-block;
+                padding: 10px 15px;
+                background-color: var(--card-bg);
+                color: var(--text-color);
+                border: 1px solid var(--border-color);
+                border-radius: 5px;
+                text-decoration: none;
+                font-size: 0.9em;
+                transition: background-color 0.3s;
+              }
+              .back-button:hover {
+                background-color: var(--border-color);
+              }
           </style>
       </head>
       <body>
           <div class="header">
-            <h1>${projectTitle}</h1>
-            <p>A gallery by ${authorName}</p>
+            <h1>${title}</h1>
+            <p>A gallery by ${author}</p>
           </div>
 
           <div class="theme-select-wrapper">
@@ -161,6 +386,8 @@ app.get("/", async (req, res) => {
               <option value="dark">Dark</option>
             </select>
           </div>
+
+          ${viewType === "folder" ? `<div class="back-button-wrapper"><a href="/" class="back-button">&#8592; Back to Gallery</a></div>` : ""}
 
           ${fileListHtml}
 
@@ -174,7 +401,7 @@ app.get("/", async (req, res) => {
           </div>
 
           <script>
-            const mediaFiles = ${JSON.stringify(fileData)};
+            const mediaFiles = ${JSON.stringify(mediaFilesForModal)};
             let currentIndex = 0;
             const modal = document.getElementById("myModal");
             const modalMediaWrapper = document.querySelector(".modal-media-wrapper");
@@ -187,9 +414,11 @@ app.get("/", async (req, res) => {
             // Function to show the modal with the selected media
             const showModal = (index) => {
               currentIndex = index;
+              if (currentIndex < 0 || currentIndex >= mediaFiles.length) return; // Boundary check
+
               const file = mediaFiles[currentIndex];
 
-              modalMediaWrapper.innerHTML = '';
+              modalMediaWrapper.innerHTML = ''; // Clear previous content
               const mediaElement = document.createElement(file.ext.includes('mp4') || file.ext.includes('mov') || file.ext.includes('webm') ? 'video' : 'img');
               mediaElement.src = '/' + file.file;
               mediaElement.alt = file.caption;
@@ -197,6 +426,8 @@ app.get("/", async (req, res) => {
               if (mediaElement.tagName === 'VIDEO') {
                   mediaElement.controls = true;
                   mediaElement.preload = "metadata";
+                  mediaElement.autoplay = true; // Autoplay videos when opened in modal
+                  mediaElement.loop = true; // Loop videos
               }
               mediaElement.classList.add('modal-content');
               modalMediaWrapper.appendChild(mediaElement);
@@ -205,10 +436,10 @@ app.get("/", async (req, res) => {
               modal.style.display = "block";
             };
 
-            // Event listeners for thumbnails
-            document.querySelectorAll('.media-container').forEach(container => {
+            // Event listeners for file thumbnails (opens modal)
+            document.querySelectorAll('.media-container.file-container').forEach(container => {
                 container.addEventListener('click', (e) => {
-                    e.preventDefault();
+                    e.preventDefault(); // Prevent default navigation to open modal
                     const index = parseInt(container.dataset.index);
                     showModal(index);
                 });
@@ -218,10 +449,10 @@ app.get("/", async (req, res) => {
             document.querySelector('.close').addEventListener('click', () => {
               modal.style.display = "none";
               const video = modalMediaWrapper.querySelector('video');
-              if (video) video.pause();
+              if (video) video.pause(); // Pause video when modal closes
             });
 
-            // Navigation functions
+            // Navigation functions for modal
             const showNext = () => {
               currentIndex = (currentIndex + 1) % mediaFiles.length;
               showModal(currentIndex);
@@ -235,13 +466,25 @@ app.get("/", async (req, res) => {
             prevBtn.addEventListener('click', showPrev);
             nextBtn.addEventListener('click', showNext);
 
+            // Close modal with Escape key
+            document.addEventListener('keydown', (e) => {
+                if (e.key === 'Escape' && modal.style.display === 'block') {
+                    modal.style.display = 'none';
+                    const video = modalMediaWrapper.querySelector('video');
+                    if (video) video.pause();
+                }
+            });
+
             // Theme management
             const applyTheme = (theme) => {
                 if (theme === 'dark') {
                     body.classList.add('dark-mode');
+                    localStorage.setItem('theme', 'dark');
                 } else if (theme === 'light') {
                     body.classList.remove('dark-mode');
+                    localStorage.setItem('theme', 'light');
                 } else { // 'system'
+                    localStorage.removeItem('theme'); // Clear user preference
                     const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
                     if (prefersDark) {
                         body.classList.add('dark-mode');
@@ -252,16 +495,13 @@ app.get("/", async (req, res) => {
             };
 
             const setInitialTheme = () => {
-                const hour = new Date().getHours();
-                const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-
-                // Set initial theme based on system preference and time
-                if (prefersDark || hour >= 19 || hour < 6) {
-                    themeSelect.value = 'system';
-                    applyTheme('system');
+                const savedTheme = localStorage.getItem('theme');
+                if (savedTheme) {
+                    themeSelect.value = savedTheme;
+                    applyTheme(savedTheme);
                 } else {
                     themeSelect.value = 'system';
-                    applyTheme('system');
+                    applyTheme('system'); // Apply system preference
                 }
             };
 
@@ -276,13 +516,7 @@ app.get("/", async (req, res) => {
           </script>
       </body>
       </html>
-    `;
-    res.send(html);
-  } catch (err) {
-    console.error("Error in main route:", err);
-    res.status(500).send("An error occurred while building the gallery.");
-  }
-});
+`;
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
